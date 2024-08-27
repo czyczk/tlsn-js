@@ -4,6 +4,12 @@ export interface Proof {
   notaryUrl: string;
 }
 
+export interface TdnSessionMaterials {
+  session: Session;
+  substrings: Substrings;
+  notaryUrl: string;
+}
+
 export interface Session {
   header: Header;
   signature: Signature;

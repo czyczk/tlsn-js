@@ -1,5 +1,4 @@
 use futures::channel::oneshot;
-use std::ops::Range;
 use tlsn_prover::tls::{Prover, ProverConfig};
 use wasm_bindgen_futures::spawn_local;
 use web_time::Instant;
@@ -18,9 +17,7 @@ use futures::AsyncWriteExt;
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, Request, StatusCode};
 
-use js_sys::Array;
 use strum::EnumMessage;
-use tlsn_core::proof::TlsProof;
 use url::Url;
 use wasm_bindgen::prelude::*;
 use web_sys::{Headers, RequestInit, RequestMode};
@@ -28,8 +25,7 @@ use web_sys::{Headers, RequestInit, RequestMode};
 use tracing::{debug, info};
 
 #[derive(strum_macros::EnumMessage, Debug, Clone, Copy)]
-#[allow(dead_code)]
-enum ProverPhases {
+enum ColectorPhases {
     #[strum(message = "Connect application server with websocket proxy")]
     ConnectWsProxy,
     #[strum(message = "Build prover config")]
@@ -54,29 +50,14 @@ enum ProverPhases {
     ParseResponse,
     #[strum(message = "Close the connection to the server")]
     CloseConnection,
-    #[strum(message = "Start notarization")]
-    StartNotarization,
-    #[strum(message = "Commit to data")]
-    Commit,
-    #[strum(message = "Finalize")]
-    Finalize,
-    #[strum(message = "Notarization complete")]
-    NotarizationComplete,
-    #[strum(message = "Create Proof")]
-    CreateProof,
 }
 
-fn log_phase(phase: ProverPhases) {
+fn log_phase(phase: ColectorPhases) {
     info!("tlsn-js {}: {}", phase as u8, phase.get_message().unwrap());
 }
 
 #[wasm_bindgen]
-pub async fn prover(
-    target_url_str: &str,
-    val: JsValue,
-    secret_headers: JsValue,
-    secret_body: JsValue,
-) -> Result<String, JsValue> {
+pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, JsValue> {
     debug!("target_url: {}", target_url_str);
     let target_url = Url::parse(target_url_str)
         .map_err(|e| JsValue::from_str(&format!("Could not parse target_url: {:?}", e)))?;
@@ -161,7 +142,7 @@ pub async fn prover(
         .expect_throw("assume the notary ws connection succeeds");
     let notary_ws_stream_into = notary_ws_stream.into_io();
 
-    log_phase(ProverPhases::BuildProverConfig);
+    log_phase(ColectorPhases::BuildProverConfig);
 
     let target_host = target_url
         .host_str()
@@ -184,7 +165,7 @@ pub async fn prover(
 
     // Create a Prover and set it up with the Notary
     // This will set up the MPC backend prior to connecting to the server.
-    log_phase(ProverPhases::SetUpProver);
+    log_phase(ColectorPhases::SetUpProver);
     let prover = Prover::new(config)
         .setup(notary_ws_stream_into)
         .await
@@ -193,7 +174,7 @@ pub async fn prover(
     /*
        Connect Application Server with websocket proxy
     */
-    log_phase(ProverPhases::ConnectWsProxy);
+    log_phase(ColectorPhases::ConnectWsProxy);
 
     let (_, client_ws_stream) = WsMeta::connect(options.websocket_proxy_url, None)
         .await
@@ -202,15 +183,15 @@ pub async fn prover(
     // Bind the Prover to the server connection.
     // The returned `mpc_tls_connection` is an MPC TLS connection to the Server: all data written
     // to/read from it will be encrypted/decrypted using MPC with the Notary.
-    log_phase(ProverPhases::BindProverToConnection);
+    log_phase(ColectorPhases::BindProverToConnection);
     let (mpc_tls_connection, prover_fut) =
         prover.connect(client_ws_stream.into_io()).await.unwrap();
     let mpc_tls_connection = unsafe { FuturesIo::new(mpc_tls_connection) };
 
     let prover_ctrl = prover_fut.control();
 
-    log_phase(ProverPhases::SpawnProverThread);
-    let (prover_sender, prover_receiver) = oneshot::channel();
+    log_phase(ColectorPhases::SpawnProverThread);
+    let (prover_sender, _prover_receiver) = oneshot::channel();
     let handled_prover_fut = async {
         let result = prover_fut.await;
         let _ = prover_sender.send(result);
@@ -218,14 +199,14 @@ pub async fn prover(
     spawn_local(handled_prover_fut);
 
     // Attach the hyper HTTP client to the TLS connection
-    log_phase(ProverPhases::AttachHttpClient);
+    log_phase(ColectorPhases::AttachHttpClient);
     let (mut request_sender, connection) =
         hyper::client::conn::http1::handshake(mpc_tls_connection)
             .await
             .map_err(|e| JsValue::from_str(&format!("Could not handshake: {:?}", e)))?;
 
     // Spawn the HTTP task to be run concurrently
-    log_phase(ProverPhases::SpawnHttpTask);
+    log_phase(ColectorPhases::SpawnHttpTask);
     let (connection_sender, connection_receiver) = oneshot::channel();
     let connection_fut = connection.without_shutdown();
     let handled_connection_fut = async {
@@ -234,7 +215,7 @@ pub async fn prover(
     };
     spawn_local(handled_connection_fut);
 
-    log_phase(ProverPhases::BuildRequest);
+    log_phase(ColectorPhases::BuildRequest);
     let mut req_with_header = Request::builder()
         .uri(target_url_str)
         .method(options.method.as_str());
@@ -255,7 +236,7 @@ pub async fn prover(
     let unwrapped_request = req_with_body
         .map_err(|e| JsValue::from_str(&format!("Could not build request: {:?}", e)))?;
 
-    log_phase(ProverPhases::StartMpcConnection);
+    log_phase(ColectorPhases::StartMpcConnection);
 
     // Defer decryption of the response.
     prover_ctrl
@@ -269,7 +250,7 @@ pub async fn prover(
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not send request: {:?}", e)))?;
 
-    log_phase(ProverPhases::ReceivedResponse);
+    log_phase(ColectorPhases::ReceivedResponse);
     if response.status() != StatusCode::OK {
         return Err(JsValue::from_str(&format!(
             "Response status is not OK: {:?}",
@@ -277,7 +258,7 @@ pub async fn prover(
         )));
     }
 
-    log_phase(ProverPhases::ParseResponse);
+    log_phase(ColectorPhases::ParseResponse);
     // Pretty printing :)
     let payload = response
         .into_body()
@@ -292,7 +273,7 @@ pub async fn prover(
     info!("Response: {}", response_pretty);
 
     // Close the connection to the server
-    log_phase(ProverPhases::CloseConnection);
+    log_phase(ColectorPhases::CloseConnection);
     let mut client_socket = connection_receiver
         .await
         .map_err(|e| {
@@ -309,169 +290,13 @@ pub async fn prover(
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not close socket: {:?}", e)))?;
 
-    // The Prover task should be done now, so we can grab it.
-    log_phase(ProverPhases::StartNotarization);
-    let prover = prover_receiver
-        .await
-        .map_err(|e| {
-            JsValue::from_str(&format!("Could not receive from prover_receiver: {:?}", e))
-        })?
-        .map_err(|e| JsValue::from_str(&format!("Could not get Prover: {:?}", e)))?;
-    let mut prover = prover.start_notarize();
-
-    let secret_headers_vecs = string_list_to_bytes_vec(&secret_headers)?;
-    let secret_headers_slices: Vec<&[u8]> = secret_headers_vecs
-        .iter()
-        .map(|vec| vec.as_slice())
-        .collect();
-
-    // Identify the ranges in the transcript that contain revealed_headers
-    let (sent_public_ranges, sent_private_ranges) = find_ranges(
-        prover.sent_transcript().data(),
-        secret_headers_slices.as_slice(),
-    );
-
-    let secret_body_vecs = string_list_to_bytes_vec(&secret_body)?;
-    let secret_body_slices: Vec<&[u8]> =
-        secret_body_vecs.iter().map(|vec| vec.as_slice()).collect();
-
-    // Identify the ranges in the transcript that contain the only data we want to reveal later
-    let (recv_public_ranges, recv_private_ranges) = find_ranges(
-        prover.recv_transcript().data(),
-        secret_body_slices.as_slice(),
-    );
-
-    log_phase(ProverPhases::Commit);
-
-    let _recv_len = prover.recv_transcript().data().len();
-
-    let builder = prover.commitment_builder();
-
-    // Commit to the outbound and inbound transcript, isolating the data that contain secrets
-    let sent_pub_commitment_ids = sent_public_ranges
-        .iter()
-        .map(|range| {
-            builder.commit_sent(range).map_err(|e| {
-                JsValue::from_str(&format!("Error committing sent pub range: {:?}", e))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    sent_private_ranges.iter().try_for_each(|range| {
-        builder
-            .commit_sent(range)
-            .map_err(|e| {
-                JsValue::from_str(&format!("Error committing sent private range: {:?}", e))
-            })
-            .map(|_| ())
+    let session_materials = "El Psy Congroo from TDN!";
+    let res = serde_json::to_string_pretty(&session_materials).map_err(|e| {
+        JsValue::from_str(&format!("Could not serialize session materials: {:?}", e))
     })?;
-
-    let recv_pub_commitment_ids = recv_public_ranges
-        .iter()
-        .map(|range| {
-            builder.commit_recv(range).map_err(|e| {
-                JsValue::from_str(&format!("Error committing recv public ranges: {:?}", e))
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-
-    recv_private_ranges.iter().try_for_each(|range| {
-        builder
-            .commit_recv(range)
-            .map_err(|e| {
-                JsValue::from_str(&format!("Error committing recv private range: {:?}", e))
-            })
-            .map(|_| ())
-    })?;
-
-    // Finalize, returning the notarized session
-    log_phase(ProverPhases::Finalize);
-    let notarized_session = prover
-        .finalize()
-        .await
-        .map_err(|e| JsValue::from_str(&format!("Error finalizing prover: {:?}", e)))?;
-
-    log_phase(ProverPhases::NotarizationComplete);
-
-    // Create a proof for all committed data in this session
-    log_phase(ProverPhases::CreateProof);
-    let session_proof = notarized_session.session_proof();
-
-    let mut proof_builder = notarized_session.data().build_substrings_proof();
-
-    // Reveal everything except the redacted stuff (which for the response it's everything except the screen_name)
-    sent_pub_commitment_ids
-        .iter()
-        .chain(recv_pub_commitment_ids.iter())
-        .try_for_each(|id| {
-            proof_builder
-                .reveal_by_id(*id)
-                .map_err(|e| JsValue::from_str(&format!("Could not reveal commitment: {:?}", e)))
-                .map(|_| ())
-        })?;
-
-    let substrings_proof = proof_builder
-        .build()
-        .map_err(|e| JsValue::from_str(&format!("Could not build proof: {:?}", e)))?;
-
-    let proof = TlsProof {
-        session: session_proof,
-        substrings: substrings_proof,
-    };
-
-    let res = serde_json::to_string_pretty(&proof)
-        .map_err(|e| JsValue::from_str(&format!("Could not serialize proof: {:?}", e)))?;
 
     let duration = start_time.elapsed();
     info!("!@# request took {} seconds", duration.as_secs());
 
     Ok(res)
-}
-
-/// Find the ranges of the public and private parts of a sequence.
-///
-/// Returns a tuple of `(public, private)` ranges.
-fn find_ranges(seq: &[u8], private_seq: &[&[u8]]) -> (Vec<Range<usize>>, Vec<Range<usize>>) {
-    let mut private_ranges = Vec::new();
-    for s in private_seq {
-        for (idx, w) in seq.windows(s.len()).enumerate() {
-            if w == *s {
-                private_ranges.push(idx..(idx + w.len()));
-            }
-        }
-    }
-
-    let mut sorted_ranges = private_ranges.clone();
-    sorted_ranges.sort_by_key(|r| r.start);
-
-    let mut public_ranges = Vec::new();
-    let mut last_end = 0;
-    for r in sorted_ranges {
-        if r.start > last_end {
-            public_ranges.push(last_end..r.start);
-        }
-        last_end = r.end;
-    }
-
-    if last_end < seq.len() {
-        public_ranges.push(last_end..seq.len());
-    }
-
-    (public_ranges, private_ranges)
-}
-
-fn string_list_to_bytes_vec(secrets: &JsValue) -> Result<Vec<Vec<u8>>, JsValue> {
-    let array: Array = Array::from(secrets);
-    let length = array.length();
-    let mut byte_slices: Vec<Vec<u8>> = Vec::new();
-
-    for i in 0..length {
-        let secret_js: JsValue = array.get(i);
-        let secret_str: String = secret_js
-            .as_string()
-            .ok_or(JsValue::from_str("Could not convert secret to string"))?;
-        let secret_bytes = secret_str.into_bytes();
-        byte_slices.push(secret_bytes);
-    }
-    Ok(byte_slices)
 }

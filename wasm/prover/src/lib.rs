@@ -3,6 +3,7 @@ mod request_opt;
 mod requests;
 
 pub mod prover;
+pub mod tdn_collector;
 pub use prover::prover;
 
 pub mod verify;

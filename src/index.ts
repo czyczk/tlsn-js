@@ -1,13 +1,17 @@
 import TLSN from './tlsn';
-import { DEFAULT_LOGGING_FILTER } from './tlsn';
-import { Proof } from './types';
+import TDN from './tdn';
+import { DEFAULT_LOGGING_FILTER as DEFAULT_TLSN_LOGGING_FILTER } from './tlsn';
+import { DEFAULT_LOGGING_FILTER as DEFAULT_TDN_LOGGING_FILTER } from './tdn';
+import { Proof, TdnSessionMaterials } from './types';
 
 let _tlsn: TLSN;
-const current_logging_filter = DEFAULT_LOGGING_FILTER;
+let _tdn: TDN;
+const current_tlsn_logging_filter = DEFAULT_TLSN_LOGGING_FILTER;
+const current_tdn_logging_filter = DEFAULT_TDN_LOGGING_FILTER;
 
 async function getTLSN(logging_filter?: string): Promise<TLSN> {
   const logging_filter_changed =
-    logging_filter && logging_filter == current_logging_filter;
+    logging_filter && logging_filter == current_tlsn_logging_filter;
 
   if (!logging_filter_changed && _tlsn) return _tlsn;
   // @ts-ignore
@@ -16,13 +20,33 @@ async function getTLSN(logging_filter?: string): Promise<TLSN> {
   return _tlsn;
 }
 
+async function getTDN(logging_filter?: string): Promise<TDN> {
+  const logging_filter_changed =
+    logging_filter && logging_filter == current_tdn_logging_filter;
+
+  if (!logging_filter_changed && _tdn) return _tdn;
+  // @ts-ignore
+  if (logging_filter) _tdn = await new TDN(logging_filter);
+  else _tdn = await new TDN();
+  return _tdn;
+}
+
 /**
  * If you want to change the default logging filter, call this method before calling prove or verify
  * For the filter syntax consult: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#example-syntax
  * @param logging_filter
  */
-export const set_logging_filter = async (logging_filter: string) => {
+export const set_tlsn_logging_filter = async (logging_filter: string) => {
   getTLSN(logging_filter);
+};
+
+/**
+ * If you want to change the default logging filter, call this method before calling prove or verify
+ * For the filter syntax consult: https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#example-syntax
+ * @param logging_filter
+ */
+export const set_tdn_logging_filter = async (logging_filter: string) => {
+  getTDN(logging_filter);
 };
 
 export const prove = async (
@@ -93,6 +117,52 @@ export const verify = async (
   return {
     ...result,
     notaryUrl: proof.notaryUrl,
+  };
+};
+
+export const tdnCollectSessionMaterials = async (
+  url: string,
+  options: {
+    notaryUrl: string;
+    websocketProxyUrl: string;
+    method?: string;
+    headers?: { [key: string]: string };
+    body?: string;
+    maxSentData?: number;
+    maxRecvData?: number;
+    maxTranscriptSize?: number;
+  },
+): Promise<TdnSessionMaterials> => {
+  const {
+    method,
+    headers = {},
+    body = '',
+    maxSentData,
+    maxRecvData,
+    maxTranscriptSize = 16384,
+    notaryUrl,
+    websocketProxyUrl,
+  } = options;
+
+  const tdn = await getTDN();
+
+  headers['Host'] = new URL(url).host;
+  headers['Connection'] = 'close';
+
+  const sessionMaterials = await tdn.collectSessionMaterials(url, {
+    method,
+    headers,
+    body,
+    maxSentData,
+    maxRecvData,
+    maxTranscriptSize,
+    notaryUrl,
+    websocketProxyUrl,
+  });
+
+  return {
+    ...sessionMaterials,
+    notaryUrl,
   };
 };
 
