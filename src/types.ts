@@ -5,8 +5,7 @@ export interface Proof {
 }
 
 export interface TdnSessionMaterials {
-  session: Session;
-  substrings: Substrings;
+  session: string;
   notaryUrl: string;
 }
 

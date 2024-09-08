@@ -1,6 +1,10 @@
+use std::ops::Range;
+
 use futures::channel::oneshot;
-use tlsn_prover::tls::{Prover, ProverConfig};
-use wasm_bindgen_futures::spawn_local;
+use js_sys::{Array, Promise};
+use serde::{Deserialize, Serialize};
+use tdn_prover::tls::{Prover, ProverConfig};
+use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_time::Instant;
 
 use ws_stream_wasm::*;
@@ -20,12 +24,12 @@ use hyper::{body::Bytes, Request, StatusCode};
 use strum::EnumMessage;
 use url::Url;
 use wasm_bindgen::prelude::*;
-use web_sys::{Headers, RequestInit, RequestMode};
+use web_sys::{window, Headers, RequestInit, RequestMode};
 
 use tracing::{debug, info};
 
 #[derive(strum_macros::EnumMessage, Debug, Clone, Copy)]
-enum ColectorPhases {
+enum CollectorPhases {
     #[strum(message = "Connect application server with websocket proxy")]
     ConnectWsProxy,
     #[strum(message = "Build prover config")]
@@ -52,7 +56,7 @@ enum ColectorPhases {
     CloseConnection,
 }
 
-fn log_phase(phase: ColectorPhases) {
+fn log_phase(phase: CollectorPhases) {
     info!("tlsn-js {}: {}", phase as u8, phase.get_message().unwrap());
 }
 
@@ -124,25 +128,24 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     let rust_string = fetch_as_json_string(&url, &opts)
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not fetch session: {:?}", e)))?;
-    let notarization_response =
-        serde_json::from_str::<NotarizationSessionResponse>(&rust_string)
-            .map_err(|e| JsValue::from_str(&format!("Could not deserialize response: {:?}", e)))?;
+    let tdn_collection_response = serde_json::from_str::<NotarizationSessionResponse>(&rust_string)
+        .map_err(|e| JsValue::from_str(&format!("Could not deserialize response: {:?}", e)))?;
     debug!("Response: {}", rust_string);
 
-    debug!("Notarization response: {:?}", notarization_response,);
+    debug!("TDN collect response: {:?}", tdn_collection_response,);
     let notary_wss_url = format!(
-        "{}://{}{}/notarize?sessionId={}",
+        "{}://{}{}/tdn-collect?sessionId={}",
         if notary_ssl { "wss" } else { "ws" },
         notary_host,
         notary_path_str,
-        notarization_response.session_id
+        tdn_collection_response.session_id
     );
     let (_, notary_ws_stream) = WsMeta::connect(notary_wss_url, None)
         .await
         .expect_throw("assume the notary ws connection succeeds");
     let notary_ws_stream_into = notary_ws_stream.into_io();
 
-    log_phase(ColectorPhases::BuildProverConfig);
+    log_phase(CollectorPhases::BuildProverConfig);
 
     let target_host = target_url
         .host_str()
@@ -158,14 +161,14 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
         builder.max_recv_data(max_recv_data);
     }
     let config = builder
-        .id(notarization_response.session_id)
+        .id(tdn_collection_response.session_id)
         .server_dns(target_host)
         .build()
         .map_err(|e| JsValue::from_str(&format!("Could not build prover config: {:?}", e)))?;
 
     // Create a Prover and set it up with the Notary
     // This will set up the MPC backend prior to connecting to the server.
-    log_phase(ColectorPhases::SetUpProver);
+    log_phase(CollectorPhases::SetUpProver);
     let prover = Prover::new(config)
         .setup(notary_ws_stream_into)
         .await
@@ -174,7 +177,7 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     /*
        Connect Application Server with websocket proxy
     */
-    log_phase(ColectorPhases::ConnectWsProxy);
+    log_phase(CollectorPhases::ConnectWsProxy);
 
     let (_, client_ws_stream) = WsMeta::connect(options.websocket_proxy_url, None)
         .await
@@ -183,14 +186,14 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     // Bind the Prover to the server connection.
     // The returned `mpc_tls_connection` is an MPC TLS connection to the Server: all data written
     // to/read from it will be encrypted/decrypted using MPC with the Notary.
-    log_phase(ColectorPhases::BindProverToConnection);
+    log_phase(CollectorPhases::BindProverToConnection);
     let (mpc_tls_connection, prover_fut) =
         prover.connect(client_ws_stream.into_io()).await.unwrap();
     let mpc_tls_connection = unsafe { FuturesIo::new(mpc_tls_connection) };
 
     let prover_ctrl = prover_fut.control();
 
-    log_phase(ColectorPhases::SpawnProverThread);
+    log_phase(CollectorPhases::SpawnProverThread);
     let (prover_sender, _prover_receiver) = oneshot::channel();
     let handled_prover_fut = async {
         let result = prover_fut.await;
@@ -199,14 +202,14 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     spawn_local(handled_prover_fut);
 
     // Attach the hyper HTTP client to the TLS connection
-    log_phase(ColectorPhases::AttachHttpClient);
+    log_phase(CollectorPhases::AttachHttpClient);
     let (mut request_sender, connection) =
         hyper::client::conn::http1::handshake(mpc_tls_connection)
             .await
             .map_err(|e| JsValue::from_str(&format!("Could not handshake: {:?}", e)))?;
 
     // Spawn the HTTP task to be run concurrently
-    log_phase(ColectorPhases::SpawnHttpTask);
+    log_phase(CollectorPhases::SpawnHttpTask);
     let (connection_sender, connection_receiver) = oneshot::channel();
     let connection_fut = connection.without_shutdown();
     let handled_connection_fut = async {
@@ -215,7 +218,7 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     };
     spawn_local(handled_connection_fut);
 
-    log_phase(ColectorPhases::BuildRequest);
+    log_phase(CollectorPhases::BuildRequest);
     let mut req_with_header = Request::builder()
         .uri(target_url_str)
         .method(options.method.as_str());
@@ -236,7 +239,7 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     let unwrapped_request = req_with_body
         .map_err(|e| JsValue::from_str(&format!("Could not build request: {:?}", e)))?;
 
-    log_phase(ColectorPhases::StartMpcConnection);
+    log_phase(CollectorPhases::StartMpcConnection);
 
     // Defer decryption of the response.
     prover_ctrl
@@ -250,7 +253,7 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not send request: {:?}", e)))?;
 
-    log_phase(ColectorPhases::ReceivedResponse);
+    log_phase(CollectorPhases::ReceivedResponse);
     if response.status() != StatusCode::OK {
         return Err(JsValue::from_str(&format!(
             "Response status is not OK: {:?}",
@@ -258,7 +261,7 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
         )));
     }
 
-    log_phase(ColectorPhases::ParseResponse);
+    log_phase(CollectorPhases::ParseResponse);
     // Pretty printing :)
     let payload = response
         .into_body()
@@ -273,7 +276,7 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     info!("Response: {}", response_pretty);
 
     // Close the connection to the server
-    log_phase(ColectorPhases::CloseConnection);
+    log_phase(CollectorPhases::CloseConnection);
     let mut client_socket = connection_receiver
         .await
         .map_err(|e| {
@@ -290,7 +293,9 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not close socket: {:?}", e)))?;
 
-    let session_materials = "El Psy Congroo from TDN!";
+    let session_materials = TdnSessionMaterials {
+        session: "El Psy Congroo from TDN!".to_owned(),
+    };
     let res = serde_json::to_string_pretty(&session_materials).map_err(|e| {
         JsValue::from_str(&format!("Could not serialize session materials: {:?}", e))
     })?;
@@ -299,4 +304,19 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     info!("!@# request took {} seconds", duration.as_secs());
 
     Ok(res)
+}
+
+pub async fn sleep_async(ms: i32) {
+    let promise = Promise::new(&mut |resolve, _| {
+        window()
+            .unwrap()
+            .set_timeout_with_callback_and_timeout_and_arguments_0(&resolve, ms)
+            .unwrap();
+    });
+    let _ = JsFuture::from(promise).await;
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct TdnSessionMaterials {
+    session: String,
 }

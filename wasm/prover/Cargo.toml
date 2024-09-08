@@ -32,7 +32,7 @@ pin-project-lite = "0.2.4"
 http-body-util = "0.1"
 hyper = { version = "1.1", features = ["client", "http1"] }
 hyper-util = { version = "0.1", features = ["http1"] }
-tracing-subscriber = { version = "0.3", features = ["time","env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["time", "env-filter"] }
 tracing-web = "0.1.2"
 
 ring = { version = "0.17", features = ["wasm32_unknown_unknown_js"] }
@@ -51,6 +51,9 @@ web-time = "1.0"
 
 tlsn-core = { path = "../../../tlsn/tlsn/tlsn-core", package = "tlsn-core" }
 tlsn-prover = { path = "../../../tlsn/tlsn/tlsn-prover", package = "tlsn-prover", features = [
+  "tracing",
+] }
+tdn-prover = { path = "../../../tlsn/tlsn/tdn-prover", package = "tdn-prover", features = [
   "tracing",
 ] }
 
