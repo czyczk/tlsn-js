@@ -11,6 +11,7 @@ version = "0.1.0"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
+base64 = "0.22"
 chrono = "0.4"
 elliptic-curve = { version = "0.13.5", features = ["pkcs8"] }
 futures = "0.3"
@@ -53,6 +54,7 @@ tlsn-core = { path = "../../../tlsn/tlsn/tlsn-core", package = "tlsn-core" }
 tlsn-prover = { path = "../../../tlsn/tlsn/tlsn-prover", package = "tlsn-prover", features = [
   "tracing",
 ] }
+tdn-core = { path = "../../../tlsn/tlsn/tdn-core", package = "tdn-core" }
 tdn-prover = { path = "../../../tlsn/tlsn/tdn-prover", package = "tdn-prover", features = [
   "tracing",
 ] }

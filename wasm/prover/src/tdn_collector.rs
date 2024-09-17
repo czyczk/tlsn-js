@@ -1,7 +1,6 @@
-use std::ops::Range;
-
+use base64::{prelude::BASE64_STANDARD, Engine as _};
 use futures::channel::oneshot;
-use js_sys::{Array, Promise};
+use js_sys::{Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tdn_prover::tls::{Prover, ProverConfig};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
@@ -54,6 +53,8 @@ enum CollectorPhases {
     ParseResponse,
     #[strum(message = "Close the connection to the server")]
     CloseConnection,
+    #[strum(message = "taking results from the prover")]
+    TakeResults,
 }
 
 fn log_phase(phase: CollectorPhases) {
@@ -61,7 +62,12 @@ fn log_phase(phase: CollectorPhases) {
 }
 
 #[wasm_bindgen]
-pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, JsValue> {
+pub async fn tdn_collect(
+    target_url_str: &str,
+    val: JsValue,
+    commitment_pwd_proof: &str,
+    pub_key_consumer_base64: &str,
+) -> Result<String, JsValue> {
     debug!("target_url: {}", target_url_str);
     let target_url = Url::parse(target_url_str)
         .map_err(|e| JsValue::from_str(&format!("Could not parse target_url: {:?}", e)))?;
@@ -194,7 +200,7 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
     let prover_ctrl = prover_fut.control();
 
     log_phase(CollectorPhases::SpawnProverThread);
-    let (prover_sender, _prover_receiver) = oneshot::channel();
+    let (prover_sender, prover_receiver) = oneshot::channel();
     let handled_prover_fut = async {
         let result = prover_fut.await;
         let _ = prover_sender.send(result);
@@ -293,17 +299,38 @@ pub async fn tdn_collect(target_url_str: &str, val: JsValue) -> Result<String, J
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not close socket: {:?}", e)))?;
 
-    let session_materials = TdnSessionMaterials {
+    // The Prover task should be done now, so we can grab it.
+    log_phase(CollectorPhases::TakeResults);
+    let prover = prover_receiver
+        .await
+        .map_err(|e| {
+            JsValue::from_str(&format!("Could not receive from prover_receiver: {:?}", e))
+        })?
+        .map_err(|e| JsValue::from_str(&format!("Could not get Prover: {:?}", e)))?;
+
+    let tdn_collect_leader_result = prover.finalize();
+
+    let _session_materials = TdnSessionMaterials {
         session: "El Psy Congroo from TDN!".to_owned(),
     };
-    let res = serde_json::to_string_pretty(&session_materials).map_err(|e| {
-        JsValue::from_str(&format!("Could not serialize session materials: {:?}", e))
+    let res = serde_json::to_string_pretty(&tdn_collect_leader_result).map_err(|e| {
+        JsValue::from_str(&format!(
+            "Could not serialize TDN collect leader result: {:?}",
+            e
+        ))
     })?;
 
     let duration = start_time.elapsed();
     info!("!@# request took {} seconds", duration.as_secs());
 
     Ok(res)
+}
+
+#[wasm_bindgen]
+pub fn bytes_to_base64(bytes: Uint8Array) -> String {
+    let byte_vec = bytes.to_vec();
+    let base64_str = BASE64_STANDARD.encode(&byte_vec);
+    return base64_str;
 }
 
 pub async fn sleep_async(ms: i32) {

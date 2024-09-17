@@ -47,6 +47,8 @@ export default class TDN {
 
   async collectSessionMaterials(
     url: string,
+    pwdProof: string,
+    pubKeyConsumerBase64: string,
     options?: {
       method?: string;
       headers?: { [key: string]: string };
@@ -64,11 +66,15 @@ export default class TDN {
     //   notaryUrl: options?.notaryUrl,
     //   websocketProxyUrl: options?.websocketProxyUrl,
     // });
+
+    const pwdProofBytes = convertStringToBytes(pwdProof);
+    const commitmentPwdProof = await sha256HashBase64(pwdProofBytes);
+
     const resProver = await tdn_collect(url, {
       ...options,
       notaryUrl: options?.notaryUrl,
       websocketProxyUrl: options?.websocketProxyUrl,
-    });
+    }, commitmentPwdProof, pubKeyConsumerBase64);
     const resJSON = JSON.parse(resProver);
     // console.log('!@# resProver,resJSON=', { resProver, resJSON });
     // console.log('!@# resAfter.memory=', resJSON.memory);
@@ -80,4 +86,16 @@ export default class TDN {
 
     return resJSON;
   }
+}
+
+function convertStringToBytes(str: string) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(str);
+  return data;
+}
+
+async function sha256HashBase64(bytes: Uint8Array) {
+  const arrayBuffer = await crypto.subtle.digest('SHA-256', bytes);
+  const hashBase64 = Buffer.from(arrayBuffer).toString('base64');
+  return hashBase64;
 }

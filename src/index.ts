@@ -122,6 +122,8 @@ export const verify = async (
 
 export const tdnCollectSessionMaterials = async (
   url: string,
+  pwdProof: string,
+  pubKeyConsumerBase64: string,
   options: {
     notaryUrl: string;
     websocketProxyUrl: string;
@@ -149,7 +151,7 @@ export const tdnCollectSessionMaterials = async (
   headers['Host'] = new URL(url).host;
   headers['Connection'] = 'close';
 
-  const sessionMaterials = await tdn.collectSessionMaterials(url, {
+  const sessionMaterials = await tdn.collectSessionMaterials(url, pwdProof, pubKeyConsumerBase64, {
     method,
     headers,
     body,
