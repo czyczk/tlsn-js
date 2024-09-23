@@ -1,8 +1,9 @@
+use base64::prelude::BASE64_URL_SAFE;
 use base64::{prelude::BASE64_STANDARD, Engine as _};
 use futures::channel::oneshot;
 use js_sys::{Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
-use tdn_prover::tls::{Prover, ProverConfig};
+use tdn_prover::tls::{ProverConfig, TdnProver};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_time::Instant;
 
@@ -53,8 +54,10 @@ enum CollectorPhases {
     ParseResponse,
     #[strum(message = "Close the connection to the server")]
     CloseConnection,
-    #[strum(message = "taking results from the prover")]
-    TakeResults,
+    #[strum(message = "Taking TLS results from the prover")]
+    TakeTlsResults,
+    #[strum(message = "Start notarization")]
+    StartNotarization,
 }
 
 fn log_phase(phase: CollectorPhases) {
@@ -65,7 +68,7 @@ fn log_phase(phase: CollectorPhases) {
 pub async fn tdn_collect(
     target_url_str: &str,
     val: JsValue,
-    commitment_pwd_proof: &str,
+    commitment_pwd_proof_base64: &str,
     pub_key_consumer_base64: &str,
 ) -> Result<String, JsValue> {
     debug!("target_url: {}", target_url_str);
@@ -81,6 +84,27 @@ pub async fn tdn_collect(
     let options: RequestOptions = serde_wasm_bindgen::from_value(val)
         .map_err(|e| JsValue::from_str(&format!("Could not deserialize options: {:?}", e)))?;
     debug!("options.notary_url: {}", options.notary_url.as_str());
+
+    // Re-encode base64 params into URL safe ones.
+    let commitment_pwd_proof = BASE64_STANDARD
+        .decode(commitment_pwd_proof_base64)
+        .map_err(|e| {
+            JsValue::from_str(&format!(
+                "Could not decode commitment_pwd_proof_base64: {:?}",
+                e
+            ))
+        })?;
+    let commitment_pwd_proof_base64 = BASE64_URL_SAFE.encode(&commitment_pwd_proof);
+
+    let pub_key_consumer = BASE64_STANDARD
+        .decode(pub_key_consumer_base64)
+        .map_err(|e| {
+            JsValue::from_str(&format!(
+                "Could not decode pub_key_consumer_base64: {:?}",
+                e
+            ))
+        })?;
+    let pub_key_consumer_base64 = BASE64_URL_SAFE.encode(&pub_key_consumer);
 
     let start_time = Instant::now();
 
@@ -134,17 +158,20 @@ pub async fn tdn_collect(
     let rust_string = fetch_as_json_string(&url, &opts)
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not fetch session: {:?}", e)))?;
-    let tdn_collection_response = serde_json::from_str::<NotarizationSessionResponse>(&rust_string)
-        .map_err(|e| JsValue::from_str(&format!("Could not deserialize response: {:?}", e)))?;
+    let session_creation_response =
+        serde_json::from_str::<NotarizationSessionResponse>(&rust_string)
+            .map_err(|e| JsValue::from_str(&format!("Could not deserialize response: {:?}", e)))?;
     debug!("Response: {}", rust_string);
 
-    debug!("TDN collect response: {:?}", tdn_collection_response,);
+    debug!("TDN collect response: {:?}", session_creation_response,);
     let notary_wss_url = format!(
-        "{}://{}{}/tdn-collect?sessionId={}",
+        "{}://{}{}/tdn-collect?sessionId={}&commitmentPwdProofBase64={}&pubKeyConsumerBase64={}",
         if notary_ssl { "wss" } else { "ws" },
         notary_host,
         notary_path_str,
-        tdn_collection_response.session_id
+        session_creation_response.session_id,
+        commitment_pwd_proof_base64,
+        pub_key_consumer_base64,
     );
     let (_, notary_ws_stream) = WsMeta::connect(notary_wss_url, None)
         .await
@@ -167,7 +194,7 @@ pub async fn tdn_collect(
         builder.max_recv_data(max_recv_data);
     }
     let config = builder
-        .id(tdn_collection_response.session_id)
+        .id(session_creation_response.session_id)
         .server_dns(target_host)
         .build()
         .map_err(|e| JsValue::from_str(&format!("Could not build prover config: {:?}", e)))?;
@@ -175,7 +202,7 @@ pub async fn tdn_collect(
     // Create a Prover and set it up with the Notary
     // This will set up the MPC backend prior to connecting to the server.
     log_phase(CollectorPhases::SetUpProver);
-    let prover = Prover::new(config)
+    let prover = TdnProver::new(config)
         .setup(notary_ws_stream_into)
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not set up prover: {:?}", e)))?;
@@ -294,13 +321,9 @@ pub async fn tdn_collect(
         .map_err(|e| JsValue::from_str(&format!("Could not get TlsConnection: {:?}", e)))?
         .io
         .into_inner();
-    client_socket
-        .close()
-        .await
-        .map_err(|e| JsValue::from_str(&format!("Could not close socket: {:?}", e)))?;
 
     // The Prover task should be done now, so we can grab it.
-    log_phase(CollectorPhases::TakeResults);
+    log_phase(CollectorPhases::TakeTlsResults);
     let prover = prover_receiver
         .await
         .map_err(|e| {
@@ -308,17 +331,34 @@ pub async fn tdn_collect(
         })?
         .map_err(|e| JsValue::from_str(&format!("Could not get Prover: {:?}", e)))?;
 
-    let tdn_collect_leader_result = prover.finalize();
+    let tdn_collect_leader_result = prover.take_collection_result();
 
-    let _session_materials = TdnSessionMaterials {
-        session: "El Psy Congroo from TDN!".to_owned(),
-    };
+    client_socket
+        .close()
+        .await
+        .map_err(|e| JsValue::from_str(&format!("Could not close socket: {:?}", e)))?;
+
     let res = serde_json::to_string_pretty(&tdn_collect_leader_result).map_err(|e| {
         JsValue::from_str(&format!(
             "Could not serialize TDN collect leader result: {:?}",
             e
         ))
     })?;
+    info!("TDN collect leader result: {}", res);
+
+    // Start notarization. Request a signature from Notary.
+    log_phase(CollectorPhases::StartNotarization);
+    let prover = prover.start_notarize();
+    let signed_proof_notary = prover
+        .notarize(commitment_pwd_proof, pub_key_consumer)
+        .await
+        .map_err(|e| JsValue::from_str(&format!("Could not notarize: {:?}", e)))?;
+
+    info!("TDN notarization result: {:?}", signed_proof_notary);
+
+    let _session_materials = TdnSessionMaterials {
+        session: "El Psy Congroo from TDN!".to_owned(),
+    };
 
     let duration = start_time.elapsed();
     info!("!@# request took {} seconds", duration.as_secs());
