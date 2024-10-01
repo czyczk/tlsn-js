@@ -1,4 +1,3 @@
-use base64::prelude::BASE64_URL_SAFE;
 use base64::{prelude::BASE64_STANDARD, Engine as _};
 use futures::channel::oneshot;
 use js_sys::{Promise, Uint8Array};
@@ -85,7 +84,6 @@ pub async fn tdn_collect(
         .map_err(|e| JsValue::from_str(&format!("Could not deserialize options: {:?}", e)))?;
     debug!("options.notary_url: {}", options.notary_url.as_str());
 
-    // Re-encode base64 params into URL safe ones.
     let commitment_pwd_proof = BASE64_STANDARD
         .decode(commitment_pwd_proof_base64)
         .map_err(|e| {
@@ -94,7 +92,6 @@ pub async fn tdn_collect(
                 e
             ))
         })?;
-    let commitment_pwd_proof_base64 = BASE64_URL_SAFE.encode(&commitment_pwd_proof);
 
     let pub_key_consumer = BASE64_STANDARD
         .decode(pub_key_consumer_base64)
@@ -104,7 +101,6 @@ pub async fn tdn_collect(
                 e
             ))
         })?;
-    let pub_key_consumer_base64 = BASE64_URL_SAFE.encode(&pub_key_consumer);
 
     let start_time = Instant::now();
 
@@ -163,15 +159,13 @@ pub async fn tdn_collect(
             .map_err(|e| JsValue::from_str(&format!("Could not deserialize response: {:?}", e)))?;
     debug!("Response: {}", rust_string);
 
-    debug!("TDN collect response: {:?}", session_creation_response,);
+    debug!("Session creation response: {:?}", session_creation_response);
     let notary_wss_url = format!(
-        "{}://{}{}/tdn-collect?sessionId={}&commitmentPwdProofBase64={}&pubKeyConsumerBase64={}",
+        "{}://{}{}/tdn-collect?sessionId={}",
         if notary_ssl { "wss" } else { "ws" },
         notary_host,
         notary_path_str,
         session_creation_response.session_id,
-        commitment_pwd_proof_base64,
-        pub_key_consumer_base64,
     );
     let (_, notary_ws_stream) = WsMeta::connect(notary_wss_url, None)
         .await
