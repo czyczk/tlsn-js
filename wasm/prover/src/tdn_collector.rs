@@ -2,6 +2,7 @@ use base64::{prelude::BASE64_STANDARD, Engine as _};
 use futures::channel::oneshot;
 use js_sys::{Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
+use tdn_core::ToTdnStandardSerialized;
 use tdn_prover::tls::{ProverConfig, TdnProver};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
 use web_time::Instant;
@@ -348,7 +349,11 @@ pub async fn tdn_collect(
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not notarize: {:?}", e)))?;
 
-    info!("TDN notarization result: {:?}", signed_proof_notary);
+    let signed_proof_notary_json_str =
+        serde_json::to_string(&signed_proof_notary.to_tdn_standard_serialized()).map_err(|e| {
+            JsValue::from_str(&format!("Could not serialize signed proof: {:?}", e))
+        })?;
+    info!("TDN notarization result: {}", signed_proof_notary_json_str,);
 
     let _session_materials = TdnSessionMaterials {
         session: "El Psy Congroo from TDN!".to_owned(),
