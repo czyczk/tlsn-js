@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 base64 = "0.22"
+blake3 = { version = "1.5", features = ["serde", "traits-preview"] }
 chrono = "0.4"
 elliptic-curve = { version = "0.13.5", features = ["pkcs8"] }
 futures = "0.3"

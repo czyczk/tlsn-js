@@ -2,6 +2,11 @@ use base64::{prelude::BASE64_STANDARD, Engine as _};
 use futures::channel::oneshot;
 use js_sys::{Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
+use tdn_core::crypto::{
+    derive_key_pbkdf2, direct_asymmetric_encrypt, symmetric_encrypt_aes256_cbc, DerivedKey,
+    EncryptedData,
+};
+use tdn_core::proof::{ProofProver, Security};
 use tdn_core::ToTdnStandardSerialized;
 use tdn_prover::tls::{ProverConfig, TdnProver};
 use wasm_bindgen_futures::{spawn_local, JsFuture};
@@ -68,8 +73,9 @@ fn log_phase(phase: CollectorPhases) {
 pub async fn tdn_collect(
     target_url_str: &str,
     val: JsValue,
-    commitment_pwd_proof_base64: &str,
+    pwd_proof: &str,
     pub_key_consumer_base64: &str,
+    evm_settlement_addr_prover: &str,
 ) -> Result<String, JsValue> {
     debug!("target_url: {}", target_url_str);
     let target_url = Url::parse(target_url_str)
@@ -85,15 +91,7 @@ pub async fn tdn_collect(
         .map_err(|e| JsValue::from_str(&format!("Could not deserialize options: {:?}", e)))?;
     debug!("options.notary_url: {}", options.notary_url.as_str());
 
-    let commitment_pwd_proof = BASE64_STANDARD
-        .decode(commitment_pwd_proof_base64)
-        .map_err(|e| {
-            JsValue::from_str(&format!(
-                "Could not decode commitment_pwd_proof_base64: {:?}",
-                e
-            ))
-        })?;
-
+    let commitment_pwd_proof: [u8; 32] = blake3::hash(pwd_proof.as_bytes()).into();
     let pub_key_consumer = BASE64_STANDARD
         .decode(pub_key_consumer_base64)
         .map_err(|e| {
@@ -102,6 +100,7 @@ pub async fn tdn_collect(
                 e
             ))
         })?;
+    let evm_settlement_addr_prover = evm_settlement_addr_prover.to_lowercase();
 
     let start_time = Instant::now();
 
@@ -345,15 +344,45 @@ pub async fn tdn_collect(
     log_phase(CollectorPhases::StartNotarization);
     let prover = prover.start_notarize();
     let signed_proof_notary = prover
-        .notarize(commitment_pwd_proof, pub_key_consumer)
+        .notarize(commitment_pwd_proof.into(), pub_key_consumer.clone())
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not notarize: {:?}", e)))?;
 
-    let signed_proof_notary_json_str =
-        serde_json::to_string(&signed_proof_notary.to_tdn_standard_serialized()).map_err(|e| {
-            JsValue::from_str(&format!("Could not serialize signed proof: {:?}", e))
-        })?;
-    info!("TDN notarization result: {}", signed_proof_notary_json_str,);
+    // Prepare Prover proof.
+    let DerivedKey {
+        key: key_pwd_proof,
+        salt: key_salt,
+    } = derive_key_pbkdf2(pwd_proof, None, None)
+        .map_err(|e| JsValue::from_str(&format!("Could not generate Prover proof: {:?}", e)))?;
+    let ciphertext2_priv_key_session_notary = symmetric_encrypt_aes256_cbc(
+        &key_pwd_proof,
+        &signed_proof_notary.ciphertext1_priv_key_session_notary,
+        None,
+    )
+    .map(|encrypted_data| concat_ciphertext_salt_nonce(&encrypted_data, &key_salt))
+    .map_err(|e| JsValue::from_str(&format!("Could not generate Prover proof: {:?}", e)))?;
+    let ciphertext1_priv_key_session_prover = direct_asymmetric_encrypt(
+        &pub_key_consumer,
+        &tdn_collect_leader_result.priv_key_session_prover,
+    );
+    let ciphertext2_priv_key_session_prover =
+        symmetric_encrypt_aes256_cbc(&key_pwd_proof, &ciphertext1_priv_key_session_prover, None)
+            .map(|encrypted_data| concat_ciphertext_salt_nonce(&encrypted_data, &key_salt))
+            .map_err(|e| JsValue::from_str(&format!("Could not generate Prover proof: {:?}", e)))?;
+    let proof_prover = ProofProver {
+        signed_proof_notary,
+        security: Security {
+            ciphertext2_priv_key_session_notary,
+            ciphertext2_priv_key_session_prover,
+        },
+        evm_settlement_addr_prover: evm_settlement_addr_prover,
+    };
+
+    let proof_prover_json_str = serde_json::to_string(&proof_prover.to_tdn_standard_serialized())
+        .map_err(|e| {
+        JsValue::from_str(&format!("Could not serialize signed proof: {:?}", e))
+    })?;
+    info!("TDN prover proof: {}", proof_prover_json_str,);
 
     let _session_materials = TdnSessionMaterials {
         session: "El Psy Congroo from TDN!".to_owned(),
@@ -385,4 +414,12 @@ pub async fn sleep_async(ms: i32) {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct TdnSessionMaterials {
     session: String,
+}
+
+fn concat_ciphertext_salt_nonce(encrypted_data: &EncryptedData, salt: &[u8]) -> Vec<u8> {
+    let mut result = Vec::with_capacity(encrypted_data.ciphertext.len() + 12 + salt.len());
+    result.extend_from_slice(&encrypted_data.ciphertext);
+    result.extend_from_slice(&salt);
+    result.extend_from_slice(&encrypted_data.iv);
+    result
 }

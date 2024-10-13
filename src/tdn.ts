@@ -49,6 +49,7 @@ export default class TDN {
     url: string,
     pwdProof: string,
     pubKeyConsumerBase64: string,
+    evmSettlementAddrProver: string,
     options?: {
       method?: string;
       headers?: { [key: string]: string };
@@ -67,14 +68,11 @@ export default class TDN {
     //   websocketProxyUrl: options?.websocketProxyUrl,
     // });
 
-    const pwdProofBytes = convertStringToBytes(pwdProof);
-    const commitmentPwdProof = await sha256HashBase64(pwdProofBytes);
-
     const resProver = await tdn_collect(url, {
       ...options,
       notaryUrl: options?.notaryUrl,
       websocketProxyUrl: options?.websocketProxyUrl,
-    }, commitmentPwdProof, pubKeyConsumerBase64);
+    }, pwdProof, pubKeyConsumerBase64, evmSettlementAddrProver);
     const resJSON = JSON.parse(resProver);
     // console.log('!@# resProver,resJSON=', { resProver, resJSON });
     // console.log('!@# resAfter.memory=', resJSON.memory);

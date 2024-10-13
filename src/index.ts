@@ -124,6 +124,7 @@ export const tdnCollectSessionMaterials = async (
   url: string,
   pwdProof: string,
   pubKeyConsumerBase64: string,
+  evmSettlementAddrProver: string,
   options: {
     notaryUrl: string;
     websocketProxyUrl: string;
@@ -151,7 +152,7 @@ export const tdnCollectSessionMaterials = async (
   headers['Host'] = new URL(url).host;
   headers['Connection'] = 'close';
 
-  const sessionMaterials = await tdn.collectSessionMaterials(url, pwdProof, pubKeyConsumerBase64, {
+  const sessionMaterials = await tdn.collectSessionMaterials(url, pwdProof, pubKeyConsumerBase64, evmSettlementAddrProver, {
     method,
     headers,
     body,
