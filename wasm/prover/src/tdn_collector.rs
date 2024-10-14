@@ -3,7 +3,7 @@ use futures::channel::oneshot;
 use js_sys::{Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tdn_core::crypto::{
-    derive_key_pbkdf2, direct_asymmetric_encrypt, symmetric_encrypt_aes256_cbc, DerivedKey,
+    derive_key_pbkdf2, direct_asymmetric_encrypt, symmetric_encrypt_aes256_gcm, DerivedKey,
     EncryptedData,
 };
 use tdn_core::proof::{ProofProver, Security};
@@ -63,6 +63,8 @@ enum CollectorPhases {
     TakeTlsResults,
     #[strum(message = "Start notarization")]
     StartNotarization,
+    #[strum(message = "Generate Prover proof")]
+    GenerateProverProof,
 }
 
 fn log_phase(phase: CollectorPhases) {
@@ -349,12 +351,13 @@ pub async fn tdn_collect(
         .map_err(|e| JsValue::from_str(&format!("Could not notarize: {:?}", e)))?;
 
     // Prepare Prover proof.
+    log_phase(CollectorPhases::GenerateProverProof);
     let DerivedKey {
         key: key_pwd_proof,
         salt: key_salt,
     } = derive_key_pbkdf2(pwd_proof, None, None)
         .map_err(|e| JsValue::from_str(&format!("Could not generate Prover proof: {:?}", e)))?;
-    let ciphertext2_priv_key_session_notary = symmetric_encrypt_aes256_cbc(
+    let ciphertext2_priv_key_session_notary = symmetric_encrypt_aes256_gcm(
         &key_pwd_proof,
         &signed_proof_notary.ciphertext1_priv_key_session_notary,
         None,
@@ -366,7 +369,7 @@ pub async fn tdn_collect(
         &tdn_collect_leader_result.priv_key_session_prover,
     );
     let ciphertext2_priv_key_session_prover =
-        symmetric_encrypt_aes256_cbc(&key_pwd_proof, &ciphertext1_priv_key_session_prover, None)
+        symmetric_encrypt_aes256_gcm(&key_pwd_proof, &ciphertext1_priv_key_session_prover, None)
             .map(|encrypted_data| concat_ciphertext_salt_nonce(&encrypted_data, &key_salt))
             .map_err(|e| JsValue::from_str(&format!("Could not generate Prover proof: {:?}", e)))?;
     let proof_prover = ProofProver {
