@@ -349,6 +349,10 @@ pub async fn tdn_collect(
         .notarize(commitment_pwd_proof.into(), pub_key_consumer.clone())
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not notarize: {:?}", e)))?;
+    info!(
+        "Notary signature: 0x{}",
+        hex::encode(&signed_proof_notary.signature.to_bytes())
+    );
 
     // Prepare Prover proof.
     log_phase(CollectorPhases::GenerateProverProof);
@@ -373,12 +377,12 @@ pub async fn tdn_collect(
             .map(|encrypted_data| concat_ciphertext_salt_nonce(&encrypted_data, &key_salt))
             .map_err(|e| JsValue::from_str(&format!("Could not generate Prover proof: {:?}", e)))?;
     let proof_prover = ProofProver {
-        signed_proof_notary,
+        proof_notary: signed_proof_notary.proof_notary,
         security: Security {
             ciphertext2_priv_key_session_notary,
             ciphertext2_priv_key_session_prover,
         },
-        evm_settlement_addr_prover: evm_settlement_addr_prover,
+        evm_settlement_addr_prover,
     };
 
     let proof_prover_json_str = serde_json::to_string(&proof_prover.to_tdn_standard_serialized())

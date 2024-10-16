@@ -18,6 +18,7 @@ elliptic-curve = { version = "0.13.5", features = ["pkcs8"] }
 futures = "0.3"
 futures-util = "0.3.28"
 getrandom = { version = "0.2", features = ["js"] }
+hex = "0.4"
 js-sys = "0.3.64"
 p256 = { version = "0.13", features = ["pem", "ecdsa"] }
 rayon = "1.5"
