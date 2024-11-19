@@ -3,7 +3,7 @@ use futures::channel::oneshot;
 use js_sys::{Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
 use tdn_core::crypto::{
-    derive_key_pbkdf2, direct_asymmetric_encrypt, symmetric_encrypt_aes256_gcm, DerivedKey,
+    derive_key_pbkdf2, hybrid_encrypt_ecies, symmetric_encrypt_aes256_gcm, DerivedKey,
     EncryptedData,
 };
 use tdn_core::proof::{ProofProver, Security};
@@ -77,7 +77,7 @@ pub async fn tdn_collect(
     val: JsValue,
     pwd_proof: &str,
     pub_key_consumer_base64: &str,
-    evm_settlement_addr_prover: &str,
+    settlement_address_prover: &str,
 ) -> Result<String, JsValue> {
     debug!("target_url: {}", target_url_str);
     let target_url = Url::parse(target_url_str)
@@ -102,7 +102,7 @@ pub async fn tdn_collect(
                 e
             ))
         })?;
-    let evm_settlement_addr_prover = evm_settlement_addr_prover.to_lowercase();
+    let settlement_address_prover = settlement_address_prover.to_lowercase();
 
     let start_time = Instant::now();
 
@@ -368,10 +368,15 @@ pub async fn tdn_collect(
     )
     .map(|encrypted_data| concat_ciphertext_salt_nonce(&encrypted_data, &key_salt))
     .map_err(|e| JsValue::from_str(&format!("Could not generate Prover proof: {:?}", e)))?;
-    let ciphertext1_priv_key_session_prover = direct_asymmetric_encrypt(
+    let ciphertext1_priv_key_session_prover = hybrid_encrypt_ecies(
         &pub_key_consumer,
         &tdn_collect_leader_result.priv_key_session_prover,
-    );
+        None,
+        None,
+        None,
+    )
+    .map(|encrypted_data| encrypted_data.serialize())
+    .map_err(|e| JsValue::from_str(&format!("Could not encrypt Prover proof: {:?}", e)))?;
     let ciphertext2_priv_key_session_prover =
         symmetric_encrypt_aes256_gcm(&key_pwd_proof, &ciphertext1_priv_key_session_prover, None)
             .map(|encrypted_data| concat_ciphertext_salt_nonce(&encrypted_data, &key_salt))
@@ -382,7 +387,7 @@ pub async fn tdn_collect(
             ciphertext2_priv_key_session_notary,
             ciphertext2_priv_key_session_prover,
         },
-        evm_settlement_addr_prover,
+        settlement_address_prover,
     };
 
     let proof_prover_json_str = serde_json::to_string(&proof_prover.to_tdn_standard_serialized())
