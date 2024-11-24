@@ -2,6 +2,7 @@ use base64::{prelude::BASE64_STANDARD, Engine as _};
 use futures::channel::oneshot;
 use js_sys::{Promise, Uint8Array};
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use tdn_core::crypto::{
     derive_key_pbkdf2, hybrid_encrypt_ecies, symmetric_encrypt_aes256_gcm, DerivedKey,
     EncryptedData,
@@ -340,7 +341,6 @@ pub async fn tdn_collect(
             e
         ))
     })?;
-    info!("TDN collect leader result: {}", res);
 
     // Start notarization. Request a signature from Notary.
     log_phase(CollectorPhases::StartNotarization);
@@ -349,10 +349,6 @@ pub async fn tdn_collect(
         .notarize(commitment_pwd_proof.into(), pub_key_consumer.clone())
         .await
         .map_err(|e| JsValue::from_str(&format!("Could not notarize: {:?}", e)))?;
-    info!(
-        "Notary signature: 0x{}",
-        hex::encode(&signed_proof_notary.signature.to_bytes())
-    );
 
     // Prepare Prover proof.
     log_phase(CollectorPhases::GenerateProverProof);
@@ -390,15 +386,49 @@ pub async fn tdn_collect(
         settlement_address_prover,
     };
 
+    // Notarization is successful. Print the result in sections.
+    info!("Notarization is successful. Upload these info on chain.");
+
+    info!("=====proofProver starts=====");
     let proof_prover_json_str = serde_json::to_string(&proof_prover.to_tdn_standard_serialized())
         .map_err(|e| {
-        JsValue::from_str(&format!("Could not serialize signed proof: {:?}", e))
+        JsValue::from_str(&format!("Could not serialize prover proof: {:?}", e))
     })?;
-    info!("TDN prover proof: {}", proof_prover_json_str,);
+    info!(proof_prover_json_str);
+    info!("=====proofProver ends=====");
 
-    let _session_materials = TdnSessionMaterials {
-        session: "El Psy Congroo from TDN!".to_owned(),
-    };
+    info!("=====signatureNotary starts=====");
+    info!(
+        "0x{}",
+        hex::encode(&signed_proof_notary.signature.to_bytes())
+    );
+    info!("=====signatureNotary ends=====");
+
+    info!("=====ciphertext1PrivKeySessionNotary starts=====");
+    info!(
+        "{}",
+        BASE64_STANDARD.encode(signed_proof_notary.ciphertext1_priv_key_session_notary)
+    );
+    info!("=====ciphertext1PrivKeySessionNotary ends=====");
+
+    info!(
+        "Save `offChainData` shown below to a file named \"offChainData-{}.json\"",
+        proof_prover
+            .proof_notary
+            .tls_data
+            .session_id
+            .to_base64_concat()
+    );
+
+    info!("=====offChainData starts=====");
+    let off_chain_data_str = serde_json::to_string(&json!({
+        "ciphertextApplicationData":BASE64_STANDARD.encode(tdn_collect_leader_result.ciphertext_application_data_server),
+        "aadSeqNo": tdn_collect_leader_result.aad_seq_application_data_server,
+    })).map_err(|e| {
+        JsValue::from_str(&format!("Could not serialize offChainData: {:?}", e))
+    })?;
+    info!("{}", off_chain_data_str);
+    info!("=====offChainData ends=====");
 
     let duration = start_time.elapsed();
     info!("!@# request took {} seconds", duration.as_secs());
@@ -421,11 +451,6 @@ pub async fn sleep_async(ms: i32) {
             .unwrap();
     });
     let _ = JsFuture::from(promise).await;
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TdnSessionMaterials {
-    session: String,
 }
 
 fn concat_ciphertext_salt_nonce(encrypted_data: &EncryptedData, salt: &[u8]) -> Vec<u8> {
