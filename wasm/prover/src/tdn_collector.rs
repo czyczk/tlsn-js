@@ -21,8 +21,8 @@ use crate::requests::{ClientType, NotarizationSessionRequest, NotarizationSessio
 
 pub use wasm_bindgen_rayon::init_thread_pool;
 
-use crate::fetch_as_json_string;
 pub use crate::request_opt::VerifyResult;
+use crate::{fetch_as_json_string, pure_info};
 use futures::AsyncWriteExt;
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Bytes, Request, StatusCode};
@@ -394,18 +394,18 @@ pub async fn tdn_collect(
         .map_err(|e| {
         JsValue::from_str(&format!("Could not serialize prover proof: {:?}", e))
     })?;
-    info!(proof_prover_json_str);
+    pure_info!("{}", proof_prover_json_str);
     info!("=====proofProver ends=====");
 
     info!("=====signatureNotary starts=====");
-    info!(
+    pure_info!(
         "0x{}",
         hex::encode(&signed_proof_notary.signature.to_bytes())
     );
     info!("=====signatureNotary ends=====");
 
     info!("=====ciphertext1PrivKeySessionNotary starts=====");
-    info!(
+    pure_info!(
         "{}",
         BASE64_STANDARD.encode(signed_proof_notary.ciphertext1_priv_key_session_notary)
     );
@@ -427,7 +427,7 @@ pub async fn tdn_collect(
     })).map_err(|e| {
         JsValue::from_str(&format!("Could not serialize offChainData: {:?}", e))
     })?;
-    info!("{}", off_chain_data_str);
+    pure_info!("{}", off_chain_data_str);
     info!("=====offChainData ends=====");
 
     let duration = start_time.elapsed();

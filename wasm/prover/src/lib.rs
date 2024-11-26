@@ -8,6 +8,9 @@ pub use prover::prover;
 
 pub mod verify;
 use tracing::error;
+use tracing_subscriber::filter::FilterFn;
+use tracing_subscriber::layer::Layer;
+use tracing_subscriber::registry::LookupSpan;
 pub use verify::verify;
 
 use wasm_bindgen::prelude::*;
@@ -32,6 +35,35 @@ use tracing_web::{performance_layer, MakeWebConsoleWriter};
 
 extern crate console_error_panic_hook;
 
+/// Log layer without prefixes.
+struct PureLogLayer;
+
+impl<S> Layer<S> for PureLogLayer
+where
+    S: tracing::Subscriber + for<'a> LookupSpan<'a>,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        if event.metadata().target() == "pure_log" {
+            let mut visitor = PureLogVisitor(String::new());
+            event.record(&mut visitor);
+            // Use console.log directly for pure logging
+            web_sys::console::log_1(&visitor.0.into());
+        }
+    }
+}
+
+struct PureLogVisitor(String);
+
+impl tracing::field::Visit for PureLogVisitor {
+    fn record_debug(&mut self, _field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        self.0 = format!("{:?}", value);
+    }
+}
+
 #[wasm_bindgen]
 pub fn setup_tracing_web(logging_filter: &str) {
     let fmt_layer = tracing_subscriber::fmt::layer()
@@ -39,17 +71,23 @@ pub fn setup_tracing_web(logging_filter: &str) {
         .with_timer(UtcTime::rfc_3339()) // std::time is not available in browsers
         // .with_thread_ids(true)
         // .with_thread_names(true)
-        .with_writer(MakeWebConsoleWriter::new()); // write events to the console
+        .with_writer(MakeWebConsoleWriter::new()) // write events to the console
+        .with_filter(FilterFn::new(|metadata: &tracing::Metadata<'_>| {
+            metadata.target() != "pure_log"
+        }));
     let perf_layer = performance_layer().with_details_from_fields(Pretty::default());
 
     let filter_layer = EnvFilter::builder()
         .parse(logging_filter)
         .unwrap_or_default();
 
+    let pure_log_layer = PureLogLayer;
+
     tracing_subscriber::registry()
         .with(filter_layer)
         .with(fmt_layer)
         .with(perf_layer)
+        .with(pure_log_layer)
         .init(); // Install these as subscribers to tracing events
 
     // https://github.com/rustwasm/console_error_panic_hook
@@ -72,4 +110,11 @@ pub async fn fetch_as_json_string(url: &str, opts: &RequestInit) -> Result<Strin
     stringified
         .as_string()
         .ok_or_else(|| JsValue::from_str("Could not stringify JSON"))
+}
+
+#[macro_export]
+macro_rules! pure_info {
+    ($($arg:tt)*) => {
+        tracing::info!(target: "pure_log", "{}", format_args!($($arg)*))
+    }
 }
